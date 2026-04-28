@@ -131,7 +131,9 @@ impl AuthnBackend for AuthBackend {
         // compare the hash against the password
         // using `spawn_blocking` because hashing is slow
         task::spawn_blocking(|| {
-            Ok(user.filter(|user| verify_password(credentials.password, &user.pw_hash).is_ok()))
+            Ok(user.filter(|user| {
+                verify_password(credentials.password, &user.pw_hash).is_ok()
+            }))
         })
         .await?
     }
@@ -200,13 +202,12 @@ fn render(env: &Environment, name: &str, ctx: minijinja::Value) -> Response {
 
 /// GET /
 async fn get_counter(session: AuthSession, State(state): State<AppState>) -> impl IntoResponse {
-    let Some(user) = session.user else {
-        return Redirect::to("/login").into_response();
-    };
+    let user = session.user.expect("this route should not be reached when not logged in");
 
     let Ok(counter) = state.model.get_counter(&user.name).await else {
         return database_error();
     };
+    let counter = counter.unwrap_or(0);
 
     render(&state.templates, "counter.html", context! { counter })
 }
@@ -216,9 +217,7 @@ async fn increment_counter(
     session: AuthSession,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let Some(user) = session.user else {
-        return Redirect::to("/login").into_response();
-    };
+    let user = session.user.expect("this route should not be reached when not logged in");
 
     let Ok(counter) = state.model.increment_counter(&user.name).await else {
         return database_error();
