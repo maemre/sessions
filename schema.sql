@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS counter (
+    user TEXT PRIMARY KEY,
+    value INTEGER NOT NULL,
+    FOREIGN KEY (user) REFERENCES user(name),
+);
+
+CREATE TABLE IF NOT EXISTS user (
+    name TEXT PRIMARY KEY,
+    pw_hash TEXT NOT NULL,
+);
