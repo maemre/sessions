@@ -2,19 +2,17 @@ use std::error::Error;
 use std::sync::Arc;
 
 use axum::{
+    Router,
     extract::State,
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
-    Router,
 };
-use axum_login::{
-    login_required, AuthManagerLayerBuilder, AuthUser, AuthnBackend,
-};
-use minijinja::{context, path_loader, Environment};
+use axum_login::{AuthManagerLayerBuilder, AuthUser, AuthnBackend, login_required};
+use minijinja::{Environment, context, path_loader};
 use password_auth::verify_password;
 use serde::{Deserialize, Serialize};
-use sqlx::{prelude::FromRow, SqlitePool};
+use sqlx::{SqlitePool, prelude::FromRow};
 use tokio::task;
 use tower_sessions::cookie::time::Duration;
 use tower_sessions::{Expiry, SessionManagerLayer};
@@ -214,7 +212,10 @@ async fn get_counter(session: AuthSession, State(state): State<AppState>) -> imp
 }
 
 /// GET /increment
-async fn increment_counter(session: AuthSession, State(state): State<AppState>) -> impl IntoResponse {
+async fn increment_counter(
+    session: AuthSession,
+    State(state): State<AppState>,
+) -> impl IntoResponse {
     let Some(user) = session.user else {
         return Redirect::to("/login").into_response();
     };
