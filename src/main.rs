@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::{OriginalUri, State},
+    extract::{Form, OriginalUri, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
@@ -90,7 +90,7 @@ impl AuthUser for User {
     }
 }
 
-#[derive(Serialize, Deserialize)]
+#[derive(Serialize, Deserialize, Debug)]
 struct Credentials {
     username: String,
     password: String,
@@ -170,6 +170,15 @@ fn database_error() -> Response {
         .into_response()
 }
 
+// Create a database error response
+fn server_error() -> Response {
+    (
+        StatusCode::INTERNAL_SERVER_ERROR,
+        Html("internal server error".to_string()),
+    )
+        .into_response()
+}
+
 // Templating
 
 /// Builds the MiniJinja environment with all our templates.
@@ -241,6 +250,85 @@ async fn increment_counter(
     )
 }
 
+async fn login(
+    mut session: AuthSession,
+    Form(credentials): Form<Credentials>,
+) -> impl IntoResponse {
+    if session.user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+
+    let Ok(user) = session.authenticate(credentials).await else {
+        return server_error();
+    };
+
+    if let Some(user) = user {
+        if session.login(&user).await.is_err() {
+            return server_error();
+        }
+        Redirect::to("/").into_response()
+    } else {
+        (StatusCode::UNAUTHORIZED, Html("no user found".to_string())).into_response()
+    }
+}
+
+async fn signup(
+    mut session: AuthSession,
+    State(state): State<AppState>,
+    Form(credentials): Form<Credentials>,
+) -> impl IntoResponse {
+    if session.user.is_some() {
+        return Redirect::to("/").into_response();
+    }
+
+    let Ok(mut trans) = state.model.pool.begin().await else {
+        return database_error();
+    };
+
+    let Ok(rows) = sqlx::query("select * from user where name = ?")
+        .bind(&credentials.username)
+        .fetch_optional(trans.as_mut())
+        .await
+    else {
+        return database_error();
+    };
+
+    if rows.is_some() {
+        return (StatusCode::UNAUTHORIZED, Html("user already exists")).into_response();
+    }
+
+    let password = credentials.password.clone();
+    let Ok(hash) = task::spawn_blocking(move || password_auth::generate_hash(&password)).await
+    else {
+        return server_error();
+    };
+
+    if sqlx::query("insert into user (name, pw_hash) values (?, ?)")
+        .bind(&credentials.username)
+        .bind(hash)
+        .execute(trans.as_mut())
+        .await
+        .is_err()
+    {
+        return database_error();
+    }
+
+    trans.commit().await.unwrap();
+
+    let Ok(user) = session.authenticate(credentials).await else {
+        return server_error();
+    };
+
+    if let Some(user) = user {
+        if session.login(&user).await.is_err() {
+            return server_error();
+        }
+        Redirect::to("/").into_response()
+    } else {
+        unreachable!()
+    }
+}
+
 /// A router for serving pages that need only auth info
 async fn serve_template(
     OriginalUri(uri): OriginalUri,
@@ -277,8 +365,8 @@ async fn build_router(state: AppState) -> Router {
         .route("/", get(get_counter))
         .route("/increment", get(increment_counter))
         .route_layer(login_required!(AuthBackend, login_url = "/login"))
-        .route("/login", get(serve_template))
-        .route("/signup", get(serve_template))
+        .route("/login", get(serve_template).post(login))
+        .route("/signup", get(serve_template).post(signup))
         .with_state(state)
         .layer(auth_layer)
 }
