@@ -3,7 +3,7 @@ use std::sync::Arc;
 
 use axum::{
     Router,
-    extract::State,
+    extract::{OriginalUri, State},
     http::StatusCode,
     response::{Html, IntoResponse, Redirect, Response},
     routing::get,
@@ -131,9 +131,7 @@ impl AuthnBackend for AuthBackend {
         // compare the hash against the password
         // using `spawn_blocking` because hashing is slow
         task::spawn_blocking(|| {
-            Ok(user.filter(|user| {
-                verify_password(credentials.password, &user.pw_hash).is_ok()
-            }))
+            Ok(user.filter(|user| verify_password(credentials.password, &user.pw_hash).is_ok()))
         })
         .await?
     }
@@ -184,7 +182,8 @@ fn build_templates() -> Environment<'static> {
 /// Renders a template or returns a 500 error page.
 ///
 /// Centralises the boilerplate of "get template → render → wrap in Html".
-fn render(env: &Environment, name: &str, ctx: minijinja::Value) -> Response {
+fn render(env: &Environment, name: &str, auth: &AuthSession, ctx: minijinja::Value) -> Response {
+    let ctx = context! { user => auth.user.clone(), ..ctx };
     match env.get_template(name).and_then(|t| t.render(ctx)) {
         Ok(html) => Html(html).into_response(),
         Err(e) => {
@@ -202,14 +201,22 @@ fn render(env: &Environment, name: &str, ctx: minijinja::Value) -> Response {
 
 /// GET /
 async fn get_counter(session: AuthSession, State(state): State<AppState>) -> impl IntoResponse {
-    let user = session.user.expect("this route should not be reached when not logged in");
+    let user = session
+        .user
+        .as_ref()
+        .expect("this route should not be reached when not logged in");
 
     let Ok(counter) = state.model.get_counter(&user.name).await else {
         return database_error();
     };
     let counter = counter.unwrap_or(0);
 
-    render(&state.templates, "counter.html", context! { counter })
+    render(
+        &state.templates,
+        "counter.html",
+        &session,
+        context! { counter },
+    )
 }
 
 /// GET /increment
@@ -217,13 +224,36 @@ async fn increment_counter(
     session: AuthSession,
     State(state): State<AppState>,
 ) -> impl IntoResponse {
-    let user = session.user.expect("this route should not be reached when not logged in");
+    let user = session
+        .user
+        .as_ref()
+        .expect("this route should not be reached when not logged in");
 
     let Ok(counter) = state.model.increment_counter(&user.name).await else {
         return database_error();
     };
 
-    render(&state.templates, "counter.html", context! { counter })
+    render(
+        &state.templates,
+        "counter.html",
+        &session,
+        context! { counter },
+    )
+}
+
+/// A router for serving pages that need only auth info
+async fn serve_template(
+    OriginalUri(uri): OriginalUri,
+    session: AuthSession,
+    State(state): State<AppState>,
+) -> Response {
+    let path = uri.path().trim_start_matches('/');
+    render(
+        &state.templates,
+        &format!("{path}.html"),
+        &session,
+        context! {},
+    )
 }
 
 async fn build_router(state: AppState) -> Router {
@@ -247,6 +277,8 @@ async fn build_router(state: AppState) -> Router {
         .route("/", get(get_counter))
         .route("/increment", get(increment_counter))
         .route_layer(login_required!(AuthBackend, login_url = "/login"))
+        .route("/login", get(serve_template))
+        .route("/signup", get(serve_template))
         .with_state(state)
         .layer(auth_layer)
 }
